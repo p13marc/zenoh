@@ -84,10 +84,6 @@ impl StageInRefill {
         }
     }
 
-    fn wait(&self) -> bool {
-        self.n_ref_r.wait().is_ok()
-    }
-
     fn wait_deadline(&self, instant: Instant) -> Result<bool, TransportClosed> {
         match self.n_ref_r.wait_deadline(instant) {
             Ok(()) => Ok(true),
@@ -459,7 +455,11 @@ impl StageIn {
     }
 
     #[inline]
-    fn push_transport_message(&mut self, msg: TransportMessage) -> bool {
+    fn push_transport_message(
+        &mut self,
+        msg: TransportMessage,
+        deadline: &mut Deadline,
+    ) -> Result<bool, TransportClosed> {
         // Lock the current serialization batch.
         let mut c_guard = zlock!(self.mutex.current);
         c_guard.notify_pending();
@@ -479,8 +479,14 @@ impl StageIn {
                                 break batch;
                             }
                             None => {
-                                if !self.s_ref.wait() {
-                                    return false;
+                                // Wait for an available batch until deadline
+                                if !deadline.wait(&self.s_ref)? {
+                                    // Still no available batch - deadline expired
+                                    tracing::trace!(
+                                        "Transport message dropped because it's over the deadline: {:?}",
+                                        msg
+                                    );
+                                    return Ok(false);
                                 }
                             }
                         },
@@ -494,13 +500,13 @@ impl StageIn {
                 if !self.batching {
                     // Move out existing batch
                     self.s_out.move_batch($batch);
-                    return true;
+                    return Ok(true);
                 } else {
                     let bytes = $batch.len();
                     c_guard.batch = Some($batch);
                     drop(c_guard);
                     self.s_out.notify(bytes);
-                    return true;
+                    return Ok(true);
                 }
             }};
         }
@@ -520,7 +526,7 @@ impl StageIn {
 
         // The first serialization attempt has failed. This means that the current
         // batch is full. Therefore, we move the current batch to stage out.
-        batch.encode(&msg).is_ok()
+        Ok(batch.encode(&msg).is_ok())
     }
 }
 
@@ -917,16 +923,22 @@ impl TransmissionPipelineProducer {
     }
 
     #[inline]
-    pub(crate) fn push_transport_message(&self, msg: TransportMessage, priority: Priority) -> bool {
+    pub(crate) fn push_transport_message(
+        &self,
+        msg: TransportMessage,
+        priority: Priority,
+    ) -> Result<bool, TransportClosed> {
         // If the queue is not QoS, it means that we only have one priority with index 0.
         let priority = if self.stage_in.len() > 1 {
             priority as usize
         } else {
             0
         };
+        // Create a deadline using the same timeout as non-droppable network messages
+        let mut deadline = Deadline::new(self.status.waits.wait_before_close, None);
         // Lock the channel. We are the only one that will be writing on it.
         let mut queue = zlock!(self.stage_in[priority]);
-        queue.push_transport_message(msg)
+        queue.push_transport_message(msg, &mut deadline)
     }
 
     pub(crate) fn disable(&self) {
