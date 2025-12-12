@@ -375,7 +375,9 @@ impl TransportUnicastTrait for TransportUnicastUniversal {
             }
             .into();
 
-            p.push_transport_message(msg, Priority::Background);
+            // Best-effort send of Close message - if it times out due to congestion,
+            // proceed with closing anyway. The peer will detect disconnection via lease timeout.
+            let _ = p.push_transport_message(msg, Priority::Background);
         }
         // Terminate and clean up the transport
         self.delete().await
