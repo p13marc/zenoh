@@ -1,0 +1,452 @@
+/// Comprehensive OAM configuration example for heterogeneous multi-link deployments
+/// Supports: Fiber, Ethernet, Radio, Satellite (GEO/LEO), and Acoustic links
+/// Copy relevant sections to your zenoh configuration file
+{
+  transport: {
+    unicast: {
+      /// Maximum number of links per transport (required for multilink)
+      /// Set high enough for all your link types
+      max_links: 8,
+
+      /// Enable QoS for priority-based routing
+      qos: {
+        enabled: true,
+      },
+
+      /// OAM (Operations, Administration, Maintenance) configuration
+      /// Enables link quality measurement and intelligent link selection.
+      /// Based on ITU-T Y.1731 OAM principles.
+      oam: {
+        /// Enable OAM probing (default: false)
+        enabled: true,
+
+        // ============================================================
+        // DEFAULT CONFIGURATION
+        // Applied when no specific link pattern or type matches
+        // ============================================================
+        defaults: {
+          probe_interval_ms: 100,
+          probe_timeout_ms: 500,
+          failure_threshold: 3,
+          sample_window: 20,
+          probe_types: ["loopback"],
+        },
+
+        // ============================================================
+        // PER-LINK-TYPE CONFIGURATION
+        // Matched by transport protocol (tcp, udp, serial, etc.)
+        // ============================================================
+        link_types: {
+          /// TCP links - assume Ethernet LAN by default
+          "tcp": { preset: "ethernet_lan" },
+
+          /// TLS links - assume WAN (more conservative)
+          "tls": { preset: "ethernet_wan" },
+
+          /// UDP links - could be anything, use moderate defaults
+          "udp": { preset: "ethernet_lan" },
+
+          /// QUIC links - typically WAN
+          "quic": { preset: "ethernet_wan" },
+
+          /// Serial links - assume radio by default
+          "serial": { preset: "radio" },
+
+          /// Unix pipes - local IPC, treat as ultra-low-latency
+          "unixpipe": { preset: "fiber" },
+        },
+
+        // ============================================================
+        // PER-LINK CONFIGURATION (highest priority)
+        // Matched by locator pattern (glob syntax)
+        // Includes priority ranges for QoS-based routing
+        // ============================================================
+        links: [
+          // --- Fiber/Local Ethernet ---
+          // Best for: Control, RealTime, Interactive (latency-critical)
+          {
+            pattern: "tcp/192.168.1.*:*",
+            config: {
+              preset: "fiber",
+              /// Override: even faster detection for critical fiber
+              probe_interval_ms: 25,
+              probe_timeout_ms: 100,
+              /// Route high-priority traffic to fiber
+              /// Priority: 0=Control, 1=RealTime, 2=InteractiveHigh, 3=InteractiveLow
+              priorities: "0-3",
+            },
+          },
+
+          // --- Corporate WAN ---
+          // Backup for interactive, primary for data
+          {
+            pattern: "tls/10.0.0.*:*",
+            config: {
+              preset: "ethernet_wan",
+              probe_types: ["loopback", "delay"],  // Monitor for asymmetric routing
+              /// Route interactive and data traffic
+              priorities: "2-6",
+            },
+          },
+
+          // --- Tactical Radio Network ---
+          // Fallback for all priorities (no restriction)
+          {
+            pattern: "serial/ttyUSB*",
+            config: {
+              preset: "radio",
+              probe_interval_ms: 2000,    // Very constrained bandwidth
+              probe_timeout_ms: 8000,
+              failure_threshold: 5,
+              sample_window: 30,
+              probe_types: ["loopback", "delay", "loss"],
+              clock_sync: {
+                required: true,
+                source: "gps",
+                accuracy_ms: 1,
+              },
+              /// Accept all priorities (fallback link)
+              /// When null/omitted, link accepts any priority
+              priorities: null,
+            },
+          },
+
+          // --- GEO Satellite Ground Station ---
+          // Best for: Bulk data (high bandwidth, high latency)
+          {
+            pattern: "udp/10.0.100.*:*",
+            config: {
+              preset: "satellite_geo",
+              probe_interval_ms: 3000,
+              probe_timeout_ms: 5000,
+              probe_types: ["loopback", "delay", "loss"],
+              clock_sync: {
+                required: true,
+                source: "gps",
+                accuracy_ms: 1,
+              },
+              /// Route data and background traffic (latency-tolerant)
+              /// Priority: 4=DataHigh, 5=Data, 6=DataLow, 7=Background
+              priorities: "4-7",
+            },
+          },
+
+          // --- LEO Satellite Terminal (Starlink-class) ---
+          // Good for: Interactive and data (moderate latency, high bandwidth)
+          {
+            pattern: "udp/10.0.200.*:*",
+            config: {
+              preset: "satellite_leo",
+              probe_interval_ms: 500,
+              probe_timeout_ms: 2000,
+              failure_threshold: 4,
+              sample_window: 40,        // Longer window to smooth handovers
+              probe_types: ["loopback", "delay", "loss"],
+              clock_sync: {
+                required: true,
+                source: "gps",
+                accuracy_ms: 1,
+              },
+              /// Route interactive through background
+              priorities: "2-7",
+            },
+          },
+
+          // --- Acoustic Modem (Underwater) ---
+          // Last resort for critical data only
+          {
+            pattern: "serial/ttyACM*",
+            config: {
+              preset: "acoustic",
+              probe_interval_ms: 30000,   // 30 seconds - bandwidth is precious
+              probe_timeout_ms: 60000,    // 60 seconds - extreme latency
+              failure_threshold: 3,
+              sample_window: 10,
+              probe_types: ["loopback", "loss"],  // Skip DMM - clock sync unreliable
+              clock_sync: {
+                required: false,          // GPS doesn't work underwater
+                source: "atomic",         // Pre-synchronized atomic clock
+                accuracy_ms: 100,
+              },
+              /// Only use for data when no other option (fallback)
+              /// Typically used as last resort due to extreme constraints
+              priorities: "4-7",
+            },
+          },
+        ],
+
+        // ============================================================
+        // SCORING CONFIGURATION
+        // Controls how links are compared and selected
+        // ============================================================
+        scoring: {
+          /// Scoring mode: "absolute" or "normalized"
+          /// - "absolute": Raw metrics, fiber always beats acoustic
+          /// - "normalized": Relative to link type baseline (recommended for heterogeneous)
+          mode: "normalized",
+
+          /// Weights for absolute scoring (when mode: "absolute")
+          absolute_weights: {
+            rtt: 1.0,       // 1ms RTT = 1 point penalty
+            jitter: 2.0,    // Jitter penalized more
+            loss: 10.0,     // 1% loss = 10 point penalty
+            asymmetry: 1.0, // Delay asymmetry penalty
+            state: 5.0,     // Link state penalty multiplier
+          },
+
+          /// Weights for normalized scoring (when mode: "normalized")
+          normalized_weights: {
+            rtt: 1.0,
+            jitter: 1.0,
+            loss: 1.0,
+            bandwidth: 1.0,     // Current bandwidth utilization factor
+            capacity: 0.5,      // Absolute capacity preference (0 = ignore)
+          },
+
+          /// Per-priority scoring weight overrides
+          /// Different priorities have different QoS requirements
+          /// Format: "priority_range": { weights }
+          priority_weights: {
+            /// Control & RealTime (0-1): Latency critical
+            /// Used for protocol messages and real-time streams
+            "0-1": {
+              rtt: 3.0,         // RTT is critical
+              jitter: 4.0,      // Low jitter essential
+              loss: 5.0,        // Some loss tolerable (will retry)
+              bandwidth: 0.5,   // Bandwidth less important
+            },
+
+            /// Interactive (2-3): Balanced latency/reliability
+            /// Used for interactive applications, queries
+            "2-3": {
+              rtt: 2.0,
+              jitter: 2.0,
+              loss: 10.0,       // Loss impacts user experience
+              bandwidth: 1.0,
+            },
+
+            /// Data (4-6): Throughput oriented
+            /// Used for bulk data transfer, file sync
+            "4-6": {
+              rtt: 0.5,         // Latency less important
+              jitter: 0.5,
+              loss: 15.0,       // Loss causes retransmits
+              bandwidth: 2.0,   // Prefer high bandwidth links
+            },
+
+            /// Background (7): Best effort
+            /// Used for telemetry, logging, non-critical sync
+            "7": {
+              rtt: 0.2,         // Latency doesn't matter
+              jitter: 0.2,
+              loss: 5.0,        // Some loss acceptable
+              bandwidth: 1.0,
+              capacity: 0.0,    // Don't prefer high-capacity links
+            },
+          },
+
+          /// Link selection strategy
+          /// Options:
+          ///   - "absolute_quality": Highest absolute score wins
+          ///   - "normalized_quality": Highest normalized score wins
+          ///   - "bandwidth_weighted": Score * bandwidth product
+          ///   - "bandwidth_constrained": Normalized, with minimum bandwidth
+          ///   - "priority_with_failover": Manual priority, OAM for failure detection
+          ///   - "weighted_distribution": Load balance by score ratios
+          selection_strategy: "bandwidth_weighted",
+
+          /// For "bandwidth_constrained" strategy: minimum required bandwidth
+          min_bandwidth_bps: 100000,  // 100 kbps
+
+          /// Minimum score difference to trigger link switch (prevents flapping)
+          hysteresis: 5.0,
+
+          /// How often to re-evaluate link selection (ms)
+          evaluation_interval_ms: 1000,
+        },
+
+        /// Priority order for "priority_with_failover" strategy
+        /// Also used as tiebreaker when scores are equal
+        priority_order: [
+          "tcp/192.168.1.*:*",     // 1. Fiber/LAN (fastest, most reliable)
+          "tls/10.0.0.*:*",        // 2. Corporate WAN
+          "udp/10.0.200.*:*",      // 3. LEO satellite (low latency)
+          "udp/10.0.100.*:*",      // 4. GEO satellite (high latency but reliable)
+          "serial/ttyUSB*",        // 5. Tactical radio (variable)
+          "serial/ttyACM*",        // 6. Acoustic (last resort)
+        ],
+
+        // ============================================================
+        // BASELINE OVERRIDES
+        // Customize "typical good" values for your specific links
+        // ============================================================
+        baselines: {
+          /// Override radio baseline for your specific waveform
+          "radio": {
+            typical_rtt_ms: 150,
+            max_acceptable_rtt_ms: 800,
+            typical_jitter_ms: 50,
+            typical_loss_percent: 3.0,
+            typical_bandwidth_bps: 128000,      // 128 kbps typical
+            max_bandwidth_bps: 2000000,         // 2 Mbps max
+          },
+
+          /// Override acoustic baseline for your specific modem
+          "acoustic": {
+            typical_rtt_ms: 3000,               // 3 seconds typical
+            max_acceptable_rtt_ms: 15000,       // 15 seconds max
+            typical_jitter_ms: 800,
+            typical_loss_percent: 15.0,
+            typical_bandwidth_bps: 2400,        // 2.4 kbps modem
+            max_bandwidth_bps: 9600,            // 9.6 kbps max
+          },
+
+          /// Override LEO satellite for your constellation
+          "satellite_leo": {
+            typical_rtt_ms: 35,
+            max_acceptable_rtt_ms: 80,
+            typical_jitter_ms: 12,
+            typical_loss_percent: 0.5,
+            typical_bandwidth_bps: 150000000,   // 150 Mbps
+            max_bandwidth_bps: 300000000,       // 300 Mbps
+          },
+        },
+
+        // ============================================================
+        // MODEM METRICS INTEGRATION
+        // Physical layer metrics from modems for enhanced scoring
+        // ============================================================
+        modem_metrics: {
+          /// Enable modem metrics in scoring
+          enabled: true,
+
+          /// Poll interval in milliseconds
+          poll_interval_ms: 500,
+
+          /// Scoring weights for modem metrics
+          scoring: {
+            snr: 2.0,             // Signal-to-noise ratio
+            signal_strength: 1.0, // RSSI
+            error_rate: 5.0,      // BER/PER
+            modem_state: 10.0,    // Modem operational state
+          },
+
+          /// Per-link modem configurations
+          modems: [
+            // --- Tactical Radio via SNMP ---
+            {
+              link_pattern: "serial/ttyUSB0",
+              provider: "unix_socket",
+              connection: "/run/zenoh/modem_radio0.sock",
+              bidirectional: true,
+              options: {
+                model: "harris_prc152",
+              },
+            },
+
+            // --- GEO Satellite Terminal via SNMP ---
+            {
+              link_pattern: "udp/10.0.100.*:*",
+              provider: "snmp",
+              connection: "udp/192.168.100.1:161",
+              options: {
+                community: "public",
+                oid_prefix: "1.3.6.1.4.1.enterprise.satmodem",
+                poll_timeout_ms: 2000,
+              },
+            },
+
+            // --- LEO Satellite (Starlink) via HTTP API ---
+            {
+              link_pattern: "udp/10.0.200.*:*",
+              provider: "starlink",
+              connection: "http://192.168.100.1/api/status",
+              options: {
+                api_version: "v1",
+              },
+            },
+
+            // --- Acoustic Modem via Unix Socket ---
+            {
+              link_pattern: "serial/ttyACM0",
+              provider: "unix_socket",
+              connection: "/run/zenoh/modem_acoustic0.sock",
+              bidirectional: true,
+              options: {
+                model: "evologics_s2c",
+                /// Reduce polling on acoustic - high latency link
+                poll_interval_ms: 5000,
+              },
+            },
+
+            // --- Secondary Radio via Shared Memory ---
+            {
+              link_pattern: "serial/ttyUSB1",
+              provider: "shm",
+              connection: "/zenoh_modem_radio1",
+            },
+          ],
+        },
+
+        // ============================================================
+        // CLOCK SYNCHRONIZATION (Global defaults)
+        // ============================================================
+        clock_sync: {
+          /// Default clock sync requirement
+          required: false,
+
+          /// Default expected accuracy
+          accuracy_ms: 10,
+
+          /// Default source
+          source: "ntp",
+        },
+      },
+    },
+
+    link: {
+      tx: {
+        /// Link lease duration in milliseconds
+        /// Should be >= 4 * longest probe_interval for proper liveness detection
+        /// With acoustic links at 30s interval: 4 * 30000 = 120000ms minimum
+        lease: 150000,
+
+        /// KeepAlive divisor (only used when OAM is disabled)
+        keep_alive: 4,
+      },
+    },
+  },
+
+  // ============================================================
+  // ENDPOINTS
+  // Multi-link connection targets
+  // ============================================================
+  connect: {
+    endpoints: [
+      // --- Fiber/LAN ---
+      "tcp/192.168.1.100:7447",
+      "tcp/192.168.1.101:7447",
+
+      // --- Corporate WAN ---
+      "tls/10.0.0.50:7447",
+
+      // --- GEO Satellite ---
+      "udp/10.0.100.10:7447",
+
+      // --- LEO Satellite ---
+      "udp/10.0.200.10:7447",
+
+      // --- Tactical Radio (via serial-to-IP gateway) ---
+      // Note: Serial links typically use a gateway or custom transport
+      // "serial/ttyUSB0" would be configured as a listener, not connect
+    ],
+  },
+
+  /// Listeners for incoming connections
+  listen: {
+    endpoints: [
+      "tcp/0.0.0.0:7447",
+      "udp/0.0.0.0:7447",
+    ],
+  },
+}
