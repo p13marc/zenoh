@@ -1391,4 +1391,186 @@ mod tests {
 
         Ok(())
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    /// Test for GitHub issue #1876: Blocking Push Can Block Router Indefinitely
+    /// https://github.com/eclipse-zenoh/zenoh/issues/1876
+    ///
+    /// This test verifies that `push_transport_message()` times out and returns `Ok(false)`
+    /// when no batches are available, instead of blocking forever.
+    ///
+    /// This variant uses `batching_enabled: false` for a simpler test setup where each
+    /// push immediately moves the batch to the output queue.
+    ///
+    /// See `tx_pipeline_push_transport_message_timeout_with_batching` for the test with
+    /// batching enabled (the real-world scenario).
+    async fn tx_pipeline_push_transport_message_timeout() -> ZResult<()> {
+        use zenoh_protocol::transport::KeepAlive;
+
+        // Configuration with batching disabled for simpler test setup.
+        // With batching_enabled: false, each push immediately moves the batch out.
+        let wait_before_close = Duration::from_millis(100);
+        let config = TransmissionPipelineConf {
+            batch: BatchConfig {
+                mtu: BatchSize::MAX,
+                is_streamed: true,
+                #[cfg(feature = "transport_compression")]
+                is_compression: false,
+            },
+            queue_size: [1; Priority::NUM],
+            batching_enabled: false,
+            wait_before_drop: Duration::from_millis(1),
+            max_wait_before_drop_fragments: Duration::from_millis(1024),
+            wait_before_close,
+            batching_time_limit: Duration::from_micros(1),
+            queue_alloc: QueueAllocConf {
+                mode: QueueAllocMode::Init,
+            },
+        };
+
+        // Create the pipeline. Note: we hold _consumer but don't pull from it,
+        // simulating network congestion where batches cannot be sent.
+        let tct = TransportPriorityTx::make(Bits::from(TransportSn::MAX))?;
+        let priorities = vec![tct];
+        let (producer, _consumer) = TransmissionPipeline::make(config, priorities.as_slice());
+
+        let msg: TransportMessage = KeepAlive.into();
+
+        // First push succeeds and immediately moves the batch to the output queue
+        // (because batching_enabled: false).
+        let result1 = producer.push_transport_message(msg.clone(), Priority::Background)?;
+        assert!(result1, "First push should succeed");
+
+        // Second push should timeout since the only batch is now in the output queue
+        // and the consumer is not pulling/refilling batches (simulating congestion).
+        let start = Instant::now();
+        let result2 = producer.push_transport_message(msg.clone(), Priority::Background)?;
+        let elapsed = start.elapsed();
+
+        // Verify the fix: push_transport_message should return false (timeout) instead
+        // of blocking forever, and the elapsed time should be approximately wait_before_close.
+        assert!(!result2, "Should return false on timeout");
+        assert!(
+            elapsed >= wait_before_close,
+            "Should wait at least wait_before_close duration ({:?} < {:?})",
+            elapsed,
+            wait_before_close
+        );
+        // Allow some margin for OS scheduling, but ensure it doesn't block forever
+        assert!(
+            elapsed < wait_before_close * 3,
+            "Should not wait too long ({:?} >= {:?})",
+            elapsed,
+            wait_before_close * 3
+        );
+
+        Ok(())
+    }
+
+    /// Test for GitHub issue #1876: Blocking Push Can Block Router Indefinitely
+    /// https://github.com/eclipse-zenoh/zenoh/issues/1876
+    ///
+    /// This test verifies the fix for the bug where `push_transport_message()` would block
+    /// indefinitely when called during transport close under network congestion.
+    ///
+    /// ## Bug Description
+    /// When network congestion occurs, the router attempts to close the transport by sending
+    /// a Close message via `push_transport_message()`. However, if all batches are stuck in
+    /// the output queue waiting to be sent, `push_transport_message()` would block forever
+    /// waiting for an available batch, preventing the transport from ever closing.
+    ///
+    /// The error "Unable to push non droppable network message to XXX. Closing transport!"
+    /// would repeat every 5 seconds, but the transport would never actually close.
+    ///
+    /// ## Root Cause
+    /// `push_transport_message()` used `s_ref.wait()` which blocks indefinitely, unlike
+    /// `push_network_message()` which uses a `Deadline` with `wait_before_close` timeout.
+    ///
+    /// ## Fix
+    /// Added timeout support to `push_transport_message()` using the same `Deadline` pattern
+    /// already used by `push_network_message()`. Now it returns `Ok(false)` on timeout instead
+    /// of blocking forever.
+    ///
+    /// ## Test Strategy
+    /// This test simulates the real-world congestion scenario with batching enabled:
+    /// 1. Create a pipeline with a small MTU (256 bytes) and only 1 batch per priority
+    /// 2. Push network messages large enough to fill the batch, forcing it to the output queue
+    /// 3. Attempt to push a transport message (KeepAlive) - this should timeout
+    /// 4. Verify the timeout occurs within the expected `wait_before_close` duration
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn tx_pipeline_push_transport_message_timeout_with_batching() -> ZResult<()> {
+        use zenoh_protocol::transport::KeepAlive;
+
+        // Configuration simulating real-world conditions:
+        // - batching_enabled: true (default in production)
+        // - Small MTU (256 bytes) so batches fill quickly
+        // - queue_size: [1] - only 1 batch per priority, easily exhausted
+        // - Short wait_before_close (100ms) for fast test execution
+        let wait_before_close = Duration::from_millis(100);
+        let mtu: BatchSize = 256;
+        let config = TransmissionPipelineConf {
+            batch: BatchConfig {
+                mtu,
+                is_streamed: true,
+                #[cfg(feature = "transport_compression")]
+                is_compression: false,
+            },
+            queue_size: [1; Priority::NUM],
+            batching_enabled: true,
+            wait_before_drop: Duration::from_millis(1),
+            max_wait_before_drop_fragments: Duration::from_millis(1024),
+            wait_before_close,
+            batching_time_limit: Duration::from_micros(1),
+            queue_alloc: QueueAllocConf {
+                mode: QueueAllocMode::Init,
+            },
+        };
+
+        // Create the pipeline. Note: we hold _consumer but don't pull from it,
+        // simulating network congestion where batches cannot be sent.
+        let tct = TransportPriorityTx::make(Bits::from(TransportSn::MAX))?;
+        let priorities = vec![tct];
+        let (producer, _consumer) = TransmissionPipeline::make(config, priorities.as_slice());
+
+        // Create a network message with payload large enough to fill the batch.
+        // Each message is ~half the MTU, so two messages will fill and flush the batch.
+        let payload_size = (mtu / 2) as usize;
+        let message = NetworkMessage::from(Push {
+            wire_expr: "test".into(),
+            ext_qos: ext::QoSType::new(Priority::Background, CongestionControl::Block, false),
+            ..Push::from(vec![0_u8; payload_size])
+        });
+
+        // Push network messages to fill and exhaust the only available batch.
+        // After these pushes, the batch is in the output queue (congested).
+        producer.push_network_message(message.as_ref())?;
+        producer.push_network_message(message.as_ref())?;
+
+        // Simulate the close() scenario: try to push a KeepAlive transport message.
+        // Before the fix, this would block forever. After the fix, it should timeout.
+        let transport_msg: TransportMessage = KeepAlive.into();
+
+        let start = Instant::now();
+        let result = producer.push_transport_message(transport_msg, Priority::Background)?;
+        let elapsed = start.elapsed();
+
+        // Verify the fix: push_transport_message should return false (timeout) instead
+        // of blocking forever, and the elapsed time should be approximately wait_before_close.
+        assert!(!result, "Should return false on timeout");
+        assert!(
+            elapsed >= wait_before_close,
+            "Should wait at least wait_before_close duration ({:?} < {:?})",
+            elapsed,
+            wait_before_close
+        );
+        // Allow some margin for OS scheduling, but ensure it doesn't block forever
+        assert!(
+            elapsed < wait_before_close * 3,
+            "Should not wait too long ({:?} >= {:?})",
+            elapsed,
+            wait_before_close * 3
+        );
+
+        Ok(())
+    }
 }
