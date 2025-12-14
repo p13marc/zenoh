@@ -306,7 +306,7 @@ impl TransportUnicastTrait for TransportUnicastUniversal {
         });
 
         #[cfg(feature = "transport_oam")]
-        let oam_config = crate::unicast::oam::OamConfig::default(); // TODO: get from transport config
+        let oam_config = self.manager.config.unicast.oam.clone();
         let start_rx = Box::new(move || {
             // Start the RX loop
             link.start_rx(transport, other_lease);

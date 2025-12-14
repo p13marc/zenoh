@@ -69,6 +69,8 @@ pub struct TransportManagerConfigUnicast {
     pub max_links: usize,
     #[cfg(feature = "transport_compression")]
     pub is_compression: bool,
+    #[cfg(feature = "transport_oam")]
+    pub oam: super::oam::OamConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -145,6 +147,8 @@ pub struct TransportManagerBuilderUnicast {
     pub(super) is_lowlatency: bool,
     #[cfg(feature = "transport_compression")]
     pub(super) is_compression: bool,
+    #[cfg(feature = "transport_oam")]
+    pub(super) oam: super::oam::OamConfig,
 }
 
 impl TransportManagerBuilderUnicast {
@@ -206,6 +210,12 @@ impl TransportManagerBuilderUnicast {
         self
     }
 
+    #[cfg(feature = "transport_oam")]
+    pub fn oam(mut self, oam: super::oam::OamConfig) -> Self {
+        self.oam = oam;
+        self
+    }
+
     pub async fn from_config(mut self, config: &Config) -> ZResult<TransportManagerBuilderUnicast> {
         self = self.lease(Duration::from_millis(
             *config.transport().link().tx().lease(),
@@ -234,6 +244,12 @@ impl TransportManagerBuilderUnicast {
         {
             self = self.compression(*config.transport().unicast().compression().enabled());
         }
+        #[cfg(feature = "transport_oam")]
+        {
+            self = self.oam(super::oam::OamConfig::from(
+                config.transport().unicast().oam(),
+            ));
+        }
 
         Ok(self)
     }
@@ -259,6 +275,8 @@ impl TransportManagerBuilderUnicast {
             is_lowlatency: self.is_lowlatency,
             #[cfg(feature = "transport_compression")]
             is_compression: self.is_compression,
+            #[cfg(feature = "transport_oam")]
+            oam: self.oam,
         };
 
         let state = TransportManagerStateUnicast {
@@ -302,6 +320,8 @@ impl Default for TransportManagerBuilderUnicast {
             is_lowlatency: *transport.lowlatency(),
             #[cfg(feature = "transport_compression")]
             is_compression: *compression.enabled(),
+            #[cfg(feature = "transport_oam")]
+            oam: super::oam::OamConfig::default(),
         }
     }
 }
