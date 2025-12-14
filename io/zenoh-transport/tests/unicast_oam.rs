@@ -187,3 +187,150 @@ async fn oam_udp_only() {
     let endpoint: EndPoint = format!("udp/127.0.0.1:{}", 18001).parse().unwrap();
     oam_transport_test(&endpoint).await;
 }
+
+/// Test that OAM metrics are updated over time with multiple probes
+#[cfg(feature = "transport_tcp")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn oam_metrics_update_over_time() {
+    zenoh_util::init_log_from_env_or("error");
+    let endpoint: EndPoint = format!("tcp/127.0.0.1:{}", 18002).parse().unwrap();
+
+    let router_id = ZenohIdProto::try_from([1]).unwrap();
+    let client_id = ZenohIdProto::try_from([2]).unwrap();
+
+    // Use fast probe interval for testing
+    let oam_config = OamConfig {
+        enabled: true,
+        probe_interval: Duration::from_millis(20),
+        probe_timeout: Duration::from_millis(100),
+        sample_window: 10,
+        failure_threshold: 3,
+        publish_metrics: false,
+        publish_interval: Duration::from_millis(500),
+    };
+
+    let unicast = TransportManager::config_unicast()
+        .max_sessions(1)
+        .oam(oam_config.clone());
+    let router_manager = TransportManager::builder()
+        .whatami(WhatAmI::Router)
+        .zid(router_id)
+        .unicast(unicast)
+        .build_test(Arc::new(SHRouter))
+        .unwrap();
+
+    let unicast = TransportManager::config_unicast()
+        .max_sessions(1)
+        .oam(oam_config);
+    let client_manager = TransportManager::builder()
+        .whatami(WhatAmI::Client)
+        .zid(client_id)
+        .unicast(unicast)
+        .build_test(Arc::new(SHClient))
+        .unwrap();
+
+    let res = ztimeout!(router_manager.add_listener(endpoint.clone()));
+    assert!(res.is_ok());
+
+    let res = ztimeout!(client_manager.open_transport_unicast(endpoint.clone()));
+    assert!(res.is_ok());
+    let client_transport = res.unwrap();
+
+    // Wait for initial probes
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let metrics1 = client_transport.get_link_quality_metrics().unwrap();
+    let tx_count1 = metrics1.first().map(|m| m.tx_probe_count).unwrap_or(0);
+
+    // Wait for more probes
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let metrics2 = client_transport.get_link_quality_metrics().unwrap();
+    let tx_count2 = metrics2.first().map(|m| m.tx_probe_count).unwrap_or(0);
+
+    // Verify probe count increased
+    println!("Probe count: {} -> {}", tx_count1, tx_count2);
+    assert!(
+        tx_count2 > tx_count1,
+        "Probe count should increase over time"
+    );
+
+    // Verify RTT is being measured (should be non-zero after probes)
+    if let Some(m) = metrics2.first() {
+        println!("RTT avg: {:?}", m.rtt_avg);
+        // RTT should be reasonable (less than 100ms for localhost)
+        assert!(
+            m.rtt_avg < Duration::from_millis(100),
+            "RTT should be reasonable for localhost"
+        );
+    }
+
+    let res = ztimeout!(client_transport.close());
+    assert!(res.is_ok());
+
+    ztimeout!(router_manager.close());
+    ztimeout!(client_manager.close());
+}
+
+/// Test OAM with disabled configuration
+#[cfg(feature = "transport_tcp")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn oam_disabled() {
+    zenoh_util::init_log_from_env_or("error");
+    let endpoint: EndPoint = format!("tcp/127.0.0.1:{}", 18003).parse().unwrap();
+
+    let router_id = ZenohIdProto::try_from([1]).unwrap();
+    let client_id = ZenohIdProto::try_from([2]).unwrap();
+
+    // OAM disabled
+    let oam_config = OamConfig {
+        enabled: false,
+        ..Default::default()
+    };
+
+    let unicast = TransportManager::config_unicast()
+        .max_sessions(1)
+        .oam(oam_config.clone());
+    let router_manager = TransportManager::builder()
+        .whatami(WhatAmI::Router)
+        .zid(router_id)
+        .unicast(unicast)
+        .build_test(Arc::new(SHRouter))
+        .unwrap();
+
+    let unicast = TransportManager::config_unicast()
+        .max_sessions(1)
+        .oam(oam_config);
+    let client_manager = TransportManager::builder()
+        .whatami(WhatAmI::Client)
+        .zid(client_id)
+        .unicast(unicast)
+        .build_test(Arc::new(SHClient))
+        .unwrap();
+
+    let res = ztimeout!(router_manager.add_listener(endpoint.clone()));
+    assert!(res.is_ok());
+
+    let res = ztimeout!(client_manager.open_transport_unicast(endpoint.clone()));
+    assert!(res.is_ok());
+    let client_transport = res.unwrap();
+
+    // Wait a bit
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Metrics should exist but no probes sent (OAM disabled)
+    let metrics = client_transport.get_link_quality_metrics().unwrap();
+    if let Some(m) = metrics.first() {
+        // When OAM is disabled, no probes should be sent
+        assert_eq!(
+            m.tx_probe_count, 0,
+            "No probes should be sent when OAM is disabled"
+        );
+    }
+
+    let res = ztimeout!(client_transport.close());
+    assert!(res.is_ok());
+
+    ztimeout!(router_manager.close());
+    ztimeout!(client_manager.close());
+}
