@@ -615,10 +615,45 @@ fn local_data(context: &AdminContext, query: Query) {
             .iter()
             .map(link_to_json)
             .collect_vec();
+
+        // Get OAM link quality metrics if available
+        #[cfg(feature = "transport_oam")]
+        let oam_metrics: Vec<serde_json::Value> = transport
+            .get_link_quality_metrics()
+            .unwrap_or_default()
+            .iter()
+            .map(|m| {
+                json!({
+                    "locator": m.locator.to_string(),
+                    "rtt_current_us": m.rtt_current.as_micros(),
+                    "rtt_avg_us": m.rtt_avg.as_micros(),
+                    "rtt_min_us": m.rtt_min.as_micros(),
+                    "rtt_max_us": m.rtt_max.as_micros(),
+                    "jitter_us": m.jitter.as_micros(),
+                    "loss_ratio": m.loss_ratio,
+                    "tx_probe_count": m.tx_probe_count,
+                    "rx_probe_count": m.rx_probe_count,
+                    "state": format!("{:?}", m.state),
+                    "is_alive": m.is_alive,
+                })
+            })
+            .collect();
+
         #[cfg(feature = "shared-memory")]
         let shm = transport.is_shm().unwrap_or_default();
         #[cfg(not(feature = "shared-memory"))]
         let shm = false;
+
+        #[cfg(feature = "transport_oam")]
+        let json = json!({
+            "peer": transport.get_zid().map_or_else(|_| "unknown".to_string(), |p| p.to_string()),
+            "whatami": transport.get_whatami().map_or_else(|_| "unknown".to_string(), |p| p.to_string()),
+            "links": links,
+            "oam_metrics": oam_metrics,
+            "weight": transport.get_zid().ok().and_then(|zid| links_info.get(&zid)),
+            "shm": shm,
+        });
+        #[cfg(not(feature = "transport_oam"))]
         let json = json!({
             "peer": transport.get_zid().map_or_else(|_| "unknown".to_string(), |p| p.to_string()),
             "whatami": transport.get_whatami().map_or_else(|_| "unknown".to_string(), |p| p.to_string()),

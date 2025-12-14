@@ -269,8 +269,12 @@ impl TransportUnicastUniversal {
         match oam.id {
             // Probe requests - generate and send reply
             oam_id::LBM | oam_id::DMM | oam_id::SLM => {
-                // Get rx_probe_count for SLM replies (from link metrics if available)
-                let rx_probe_count = 0u64; // TODO: get from link metrics when integrated
+                // Get rx_probe_count for SLM replies from link metrics
+                let rx_probe_count = transport_link
+                    .as_ref()
+                    .and_then(|tl| tl.oam_metrics.read().ok())
+                    .map(|m| m.rx_probe_count)
+                    .unwrap_or(0);
 
                 if let Some(reply) = crate::unicast::oam::OamResponder::handle_probe(
                     oam.id,
