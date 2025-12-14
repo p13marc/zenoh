@@ -22,7 +22,7 @@
 //! # Components and concepts
 //!
 //! The main Zenoh components and concepts are described below.
-//!  
+//!
 //! ## Session
 //!
 //! The root element of the Zenoh API is the [session].
@@ -1112,5 +1112,28 @@ pub mod cancellation {
     #[cfg(feature = "internal")]
     pub use crate::api::cancellation::SyncGroupNotifier;
 }
+
+/// OAM (Operations, Administration, Maintenance) link quality metrics.
+///
+/// This module provides types and APIs for accessing link quality metrics
+/// collected via OAM probes. Metrics include RTT, jitter, and packet loss.
+///
+/// # Example
+/// ```ignore
+/// # #[tokio::main]
+/// # async fn main() {
+/// let session = zenoh::open(zenoh::Config::default()).await.unwrap();
+/// // Link quality metrics are exposed via admin space at:
+/// // @/{zid}/link/{link_id}/metrics
+/// # }
+/// ```
+#[zenoh_macros::unstable]
+#[cfg(feature = "transport_oam")]
+pub mod link_quality {
+    pub use zenoh_transport::unicast::oam::{
+        LinkOverrides, LinkQualityMetrics, LinkState, OamConfig,
+    };
+}
+
 #[cfg(test)]
 mod tests;

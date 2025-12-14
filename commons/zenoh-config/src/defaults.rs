@@ -209,6 +209,21 @@ impl Default for TransportUnicastConf {
             lowlatency: false,
             qos: QoSUnicastConf::default(),
             compression: CompressionUnicastConf::default(),
+            oam: OamConf::default(),
+        }
+    }
+}
+
+impl Default for OamConf {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            probe_interval_ms: 100,
+            probe_timeout_ms: 500,
+            sample_window: 20,
+            failure_threshold: 3,
+            publish_metrics: true,
+            publish_interval_ms: 500,
         }
     }
 }

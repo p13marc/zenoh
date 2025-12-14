@@ -14,6 +14,8 @@
 
 #[cfg(feature = "unstable")]
 use zenoh_protocol::core::CongestionControl;
+#[cfg(feature = "transport_oam")]
+use zenoh_protocol::core::Locator;
 use zenoh_protocol::{
     core::{Priority, PriorityRange, Reliability},
     network::{NetworkMessageExt, NetworkMessageMut, NetworkMessageRef},
@@ -24,6 +26,8 @@ use zenoh_result::ZResult;
 use super::transport::TransportUnicastUniversal;
 #[cfg(feature = "shared-memory")]
 use crate::shm::map_zmsg_to_partner;
+#[cfg(feature = "transport_oam")]
+use crate::unicast::oam::LinkOverrides;
 use crate::unicast::transport_unicast_inner::TransportUnicastTrait;
 
 impl TransportUnicastUniversal {
@@ -72,6 +76,71 @@ impl TransportUnicastUniversal {
         match_.full.or(match_.partial).or(match_.any)
     }
 
+    /// Select a link considering OAM link overrides from an external controller.
+    ///
+    /// This function extends the default selection logic by:
+    /// 1. Checking if there's a forced link for the peer
+    /// 2. Filtering out disabled links
+    /// 3. Falling back to the default selection algorithm
+    ///
+    /// # Arguments
+    /// * `elements` - Iterator of (Reliability, PriorityRange, Locator) tuples
+    /// * `reliability` - Required reliability
+    /// * `priority` - Message priority
+    /// * `peer_zid` - Remote peer ZenohId
+    /// * `overrides` - Link overrides from external controller
+    ///
+    /// # Returns
+    /// Index of the selected link, or None if no suitable link found
+    #[cfg(feature = "transport_oam")]
+    fn select_with_overrides(
+        elements: impl Iterator<Item = (Reliability, Option<PriorityRange>, Locator)> + Clone,
+        reliability: Reliability,
+        priority: Priority,
+        peer_zid: &zenoh_protocol::core::ZenohIdProto,
+        overrides: &LinkOverrides,
+    ) -> Option<usize> {
+        // Check for forced link
+        if let Some(forced_locator) = overrides.get_forced_link(peer_zid) {
+            // Find the forced link in the list
+            for (idx, (_, _, locator)) in elements.clone().enumerate() {
+                if locator == forced_locator && !overrides.is_disabled(&locator) {
+                    tracing::trace!("Using forced link {} for peer {}", forced_locator, peer_zid);
+                    return Some(idx);
+                }
+            }
+            // Forced link not available - return None (traffic should fail)
+            tracing::warn!(
+                "Forced link {} not available for peer {}",
+                forced_locator,
+                peer_zid
+            );
+            return None;
+        }
+
+        // Filter out disabled links and use default selection
+        let available: Vec<(usize, (Reliability, Option<PriorityRange>))> = elements
+            .enumerate()
+            .filter(|(_, (_, _, locator))| !overrides.is_disabled(locator))
+            .map(|(idx, (r, p, _))| (idx, (r, p)))
+            .collect();
+
+        if available.is_empty() {
+            tracing::warn!("No available links for peer {} (all disabled)", peer_zid);
+            return None;
+        }
+
+        // Run default selection on available links
+        let selected = Self::select(
+            available.iter().map(|(_, (r, p))| (*r, p.clone())),
+            reliability,
+            priority,
+        );
+
+        // Map back to original index
+        selected.map(|sel_idx| available[sel_idx].0)
+    }
+
     fn handle_push_result(
         &self,
         msg: NetworkMessageRef,
@@ -118,7 +187,30 @@ impl TransportUnicastUniversal {
             .read()
             .expect("reading `TransportUnicastUniversal::links` should not fail");
 
-        let Some(transport_link_index) = Self::select(
+        // Select link: use OAM-aware selection when feature is enabled
+        #[cfg(feature = "transport_oam")]
+        let transport_link_index = {
+            let link_overrides = self.manager.state.unicast.link_overrides.read().unwrap();
+            Self::select_with_overrides(
+                transport_links.iter().map(|tl| {
+                    (
+                        tl.link
+                            .config
+                            .reliability
+                            .unwrap_or(Reliability::from(tl.link.link.is_reliable())),
+                        tl.link.config.priorities.clone(),
+                        tl.link.link.get_dst().clone(),
+                    )
+                }),
+                Reliability::from(msg.is_reliable()),
+                msg.priority(),
+                &self.config.zid,
+                &link_overrides,
+            )
+        };
+
+        #[cfg(not(feature = "transport_oam"))]
+        let transport_link_index = Self::select(
             transport_links.iter().map(|tl| {
                 (
                     tl.link
@@ -130,7 +222,9 @@ impl TransportUnicastUniversal {
             }),
             Reliability::from(msg.is_reliable()),
             msg.priority(),
-        ) else {
+        );
+
+        let Some(transport_link_index) = transport_link_index else {
             tracing::trace!(
                 "Message dropped because the transport has no links: {}",
                 msg

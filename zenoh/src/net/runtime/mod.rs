@@ -57,6 +57,8 @@ use zenoh_shm::api::{
 use zenoh_shm::reader::ShmReader;
 use zenoh_sync::get_mut_unchecked;
 use zenoh_task::TaskController;
+#[cfg(feature = "transport_oam")]
+use zenoh_transport::unicast::oam::LinkOverrides;
 use zenoh_transport::{
     multicast::TransportMulticast, unicast::TransportUnicast, TransportEventHandler,
     TransportManager, TransportMulticastEventHandler, TransportPeer, TransportPeerEventHandler,
@@ -159,6 +161,10 @@ pub trait IRuntime: Send + Sync {
     ) -> crate::matching::MatchingStatus;
 
     fn get_config(&self) -> GenericConfig;
+
+    /// Get access to link overrides for external controller integration.
+    #[cfg(feature = "transport_oam")]
+    fn get_link_overrides(&self) -> Arc<std::sync::RwLock<LinkOverrides>>;
 }
 
 impl IConfig for Notifier<Config> {
@@ -332,6 +338,11 @@ impl IRuntime for RuntimeState {
             },
             None => ShmProviderState::Disabled,
         }
+    }
+
+    #[cfg(feature = "transport_oam")]
+    fn get_link_overrides(&self) -> Arc<std::sync::RwLock<LinkOverrides>> {
+        self.manager.get_link_overrides()
     }
 }
 

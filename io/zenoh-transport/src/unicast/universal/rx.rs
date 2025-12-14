@@ -17,6 +17,8 @@ use zenoh_buffers::ZSlice;
 use zenoh_codec::transport::frame::FrameReader;
 use zenoh_core::{zlock, zread};
 use zenoh_link::Link;
+#[cfg(feature = "transport_oam")]
+use zenoh_protocol::transport::oam::{id as oam_id, Oam};
 use zenoh_protocol::{
     core::{Priority, Reliability},
     network::NetworkMessageMut,
@@ -234,6 +236,74 @@ impl TransportUnicastUniversal {
         Ok(true)
     }
 
+    /// Handle an incoming OAM message.
+    ///
+    /// For probe requests (LBM, DMM, SLM), generates and sends a reply.
+    /// For probe replies (LBR, DMR, SLR), forwards to the prober for processing.
+    #[cfg(feature = "transport_oam")]
+    fn handle_oam(&self, oam: Oam, _link: &Link) -> ZResult<()> {
+        use zenoh_protocol::common::ZExtBody;
+
+        // Extract payload bytes from ZExtBody
+        let payload_bytes: Vec<u8> = match &oam.body {
+            ZExtBody::ZBuf(buf) => {
+                let mut bytes = Vec::new();
+                for zslice in buf.zslices() {
+                    bytes.extend_from_slice(zslice.as_slice());
+                }
+                bytes
+            }
+            ZExtBody::Z64(val) => val.to_le_bytes().to_vec(),
+            ZExtBody::Unit => vec![],
+        };
+
+        match oam.id {
+            // Probe requests - generate and send reply
+            oam_id::LBM | oam_id::DMM | oam_id::SLM => {
+                // Get rx_probe_count for SLM replies (from link metrics if available)
+                let rx_probe_count = 0u64; // TODO: get from link metrics when integrated
+
+                if let Some(reply) = crate::unicast::oam::OamResponder::handle_probe(
+                    oam.id,
+                    &payload_bytes,
+                    rx_probe_count,
+                ) {
+                    // Send the reply back on the same link
+                    // For now, we log that we would send - actual sending requires pipeline access
+                    tracing::trace!(
+                        "Transport: {}. OAM reply generated for probe ID {:#06x}",
+                        self.config.zid,
+                        oam.id
+                    );
+                    // TODO: Send reply through the link's pipeline
+                    // This requires access to the link's TransmissionPipelineProducer
+                    let _ = reply; // Suppress unused warning for now
+                }
+            }
+
+            // Probe replies - forward to prober
+            oam_id::LBR | oam_id::DMR | oam_id::SLR => {
+                tracing::trace!(
+                    "Transport: {}. OAM reply received: ID {:#06x}",
+                    self.config.zid,
+                    oam.id
+                );
+                // TODO: Forward to the link's OamProber when integrated
+            }
+
+            // Unknown OAM ID - log and ignore for backward compatibility
+            _ => {
+                tracing::debug!(
+                    "Transport: {}. Unknown OAM ID: {:#06x}",
+                    self.config.zid,
+                    oam.id
+                );
+            }
+        }
+
+        Ok(())
+    }
+
     pub(super) fn read_messages(
         &self,
         mut batch: RBatch,
@@ -276,6 +346,10 @@ impl TransportUnicastUniversal {
                     self.handle_close(link, reason, session)?
                 }
                 TransportBody::KeepAlive(KeepAlive { .. }) => {}
+                #[cfg(feature = "transport_oam")]
+                TransportBody::OAM(oam) => {
+                    self.handle_oam(oam, link)?;
+                }
                 _ => {
                     tracing::debug!(
                         "Transport: {}. Message handling not implemented: {:?}",

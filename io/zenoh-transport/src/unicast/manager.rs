@@ -20,6 +20,9 @@ use std::{
     time::Duration,
 };
 
+#[cfg(feature = "transport_oam")]
+use std::sync::RwLock;
+
 use tokio::sync::{Mutex as AsyncMutex, MutexGuard as AsyncMutexGuard};
 #[cfg(feature = "transport_compression")]
 use zenoh_config::CompressionUnicastConf;
@@ -38,6 +41,8 @@ use super::{link::LinkUnicastWithOpenAck, transport_unicast_inner::InitTransport
 use crate::unicast::establishment::ext::auth::Auth;
 #[cfg(feature = "transport_multilink")]
 use crate::unicast::establishment::ext::multilink::MultiLink;
+#[cfg(feature = "transport_oam")]
+use crate::unicast::oam::LinkOverrides;
 use crate::{
     unicast::{
         lowlatency::transport::TransportUnicastLowlatency,
@@ -110,6 +115,9 @@ pub struct TransportManagerStateUnicast {
     // Active authenticators
     #[cfg(feature = "transport_auth")]
     pub(super) authenticator: Arc<Auth>,
+    // OAM link overrides for external controller integration
+    #[cfg(feature = "transport_oam")]
+    pub(super) link_overrides: Arc<RwLock<LinkOverrides>>,
 }
 
 pub struct TransportManagerParamsUnicast {
@@ -261,6 +269,8 @@ impl TransportManagerBuilderUnicast {
             multilink: Arc::new(MultiLink::make(prng, config.max_links > 1)?),
             #[cfg(feature = "transport_auth")]
             authenticator: Arc::new(self.authenticator),
+            #[cfg(feature = "transport_oam")]
+            link_overrides: Arc::new(RwLock::new(LinkOverrides::new())),
         };
 
         let params = TransportManagerParamsUnicast { config, state };
@@ -866,5 +876,16 @@ impl TransportManager {
 impl TransportManager {
     pub fn get_auth_handle_unicast(&self) -> Arc<Auth> {
         self.state.unicast.authenticator.clone()
+    }
+}
+
+#[cfg(feature = "transport_oam")]
+impl TransportManager {
+    /// Get access to the link overrides for external controller integration.
+    ///
+    /// This provides a read-only clone of the link overrides reference.
+    /// External controllers can use this to influence link selection.
+    pub fn get_link_overrides(&self) -> Arc<RwLock<LinkOverrides>> {
+        self.state.unicast.link_overrides.clone()
     }
 }

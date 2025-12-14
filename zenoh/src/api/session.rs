@@ -899,7 +899,7 @@ impl Session {
 
     /// Returns the [`ShmProviderState`](ShmProviderState) associated with the current [`Session`](Session)’s [`Runtime`](Runtime).
     ///
-    /// Each [`Runtime`](Runtime) may create its own provider to manage internal optimizations.  
+    /// Each [`Runtime`](Runtime) may create its own provider to manage internal optimizations.
     /// This method exposes that provider so it can also be accessed at the application level.
     ///
     /// Note that the provider may not be immediately available or may be disabled via configuration.
@@ -926,6 +926,41 @@ impl Session {
     #[zenoh_macros::unstable]
     pub fn get_shm_provider(&self) -> ShmProviderState {
         self.0.runtime.get_shm_provider()
+    }
+
+    /// Get access to link overrides for external controller integration.
+    ///
+    /// This provides access to the [`LinkOverrides`](crate::link_quality::LinkOverrides)
+    /// that allow external controllers to influence link selection decisions in Zenoh.
+    ///
+    /// # External Controller Architecture
+    ///
+    /// In the External Controller Architecture, Zenoh collects link quality metrics
+    /// (RTT, jitter, packet loss) via OAM probes and exposes them through the admin space.
+    /// An external controller can analyze these metrics and use this API to:
+    ///
+    /// - Force traffic to a specific link for a peer
+    /// - Disable specific links from being selected
+    /// - Re-enable previously disabled links
+    ///
+    /// # Examples
+    /// ```ignore
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let session = zenoh::open(zenoh::Config::default()).await.unwrap();
+    /// let link_overrides = session.get_link_overrides();
+    ///
+    /// // Force all traffic to a specific peer to use a specific link
+    /// let overrides = link_overrides.read().unwrap();
+    /// // overrides.set_forced_link(peer_zid, link_locator);
+    /// # }
+    /// ```
+    #[cfg(feature = "transport_oam")]
+    #[zenoh_macros::unstable]
+    pub fn get_link_overrides(
+        &self,
+    ) -> std::sync::Arc<std::sync::RwLock<crate::link_quality::LinkOverrides>> {
+        self.0.runtime.get_link_overrides()
     }
 
     /// Create a [`Subscriber`](crate::pubsub::Subscriber) for the given key expression.

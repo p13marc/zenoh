@@ -653,6 +653,28 @@ validated_struct::validator! {
                     /// When enabled is true, batches will be sent compressed. (default `false`).
                     enabled: bool,
                 },
+                /// OAM (Operations, Administration, Maintenance) configuration for link quality measurement.
+                /// When enabled, OAM probes measure RTT, jitter, and packet loss per link.
+                /// Requires the `transport_oam` feature flag.
+                pub oam: OamConf {
+                    /// Whether OAM probing is enabled (default: false).
+                    /// When enabled, OAM probes replace KeepAlive messages for liveness detection.
+                    enabled: bool,
+                    /// Probe interval in milliseconds (default: 100).
+                    /// Lower values provide more accurate metrics but increase overhead.
+                    probe_interval_ms: u64,
+                    /// Probe timeout in milliseconds (default: 500).
+                    /// Probes not replied within this time are considered lost.
+                    probe_timeout_ms: u64,
+                    /// Number of samples for moving average calculations (default: 20).
+                    sample_window: usize,
+                    /// Consecutive probe failures before marking link as down (default: 3).
+                    failure_threshold: u32,
+                    /// Publish metrics on admin space for external controllers (default: true).
+                    publish_metrics: bool,
+                    /// Metrics publication interval in milliseconds (default: 500).
+                    publish_interval_ms: u64,
+                },
             },
             pub multicast: TransportMulticastConf {
                 /// Link join interval duration in milliseconds (default: 2500)
