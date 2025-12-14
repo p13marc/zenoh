@@ -165,6 +165,17 @@ pub trait IRuntime: Send + Sync {
     /// Get access to link overrides for external controller integration.
     #[cfg(feature = "transport_oam")]
     fn get_link_overrides(&self) -> Arc<std::sync::RwLock<LinkOverrides>>;
+
+    /// Get OAM link quality metrics for all unicast transports.
+    #[cfg(feature = "transport_oam")]
+    fn get_link_quality_metrics(&self) -> Vec<zenoh_transport::unicast::oam::LinkQualityMetrics>;
+
+    /// Get OAM link quality metrics for a specific peer.
+    #[cfg(feature = "transport_oam")]
+    fn get_link_quality_metrics_for_peer(
+        &self,
+        peer: ZenohId,
+    ) -> Vec<zenoh_transport::unicast::oam::LinkQualityMetrics>;
 }
 
 impl IConfig for Notifier<Config> {
@@ -343,6 +354,30 @@ impl IRuntime for RuntimeState {
     #[cfg(feature = "transport_oam")]
     fn get_link_overrides(&self) -> Arc<std::sync::RwLock<LinkOverrides>> {
         self.manager.get_link_overrides()
+    }
+
+    #[cfg(feature = "transport_oam")]
+    fn get_link_quality_metrics(&self) -> Vec<zenoh_transport::unicast::oam::LinkQualityMetrics> {
+        zenoh_runtime::ZRuntime::Application
+            .block_in_place(self.manager.get_transports_unicast())
+            .into_iter()
+            .flat_map(|t| t.get_link_quality_metrics().unwrap_or_default())
+            .collect()
+    }
+
+    #[cfg(feature = "transport_oam")]
+    fn get_link_quality_metrics_for_peer(
+        &self,
+        peer: ZenohId,
+    ) -> Vec<zenoh_transport::unicast::oam::LinkQualityMetrics> {
+        let peer_proto: zenoh_protocol::core::ZenohIdProto = peer.into();
+        zenoh_runtime::ZRuntime::Application.block_in_place(async {
+            if let Some(transport) = self.manager.get_transport_unicast(&peer_proto).await {
+                transport.get_link_quality_metrics().unwrap_or_default()
+            } else {
+                Vec::new()
+            }
+        })
     }
 }
 

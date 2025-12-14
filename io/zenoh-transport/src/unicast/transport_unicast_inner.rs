@@ -24,6 +24,9 @@ use zenoh_protocol::{
 };
 use zenoh_result::ZResult;
 
+#[cfg(feature = "transport_oam")]
+use super::oam::LinkQualityMetrics;
+
 use super::link::{LinkUnicastWithOpenAck, MaybeOpenAck};
 use crate::{
     unicast::{link::TransportLinkUnicast, TransportConfigUnicast},
@@ -70,6 +73,10 @@ pub(crate) trait TransportUnicastTrait: Send + Sync {
     fn get_config(&self) -> &TransportConfigUnicast;
     #[cfg(feature = "stats")]
     fn stats(&self) -> zenoh_stats::TransportStats;
+
+    /// Get OAM link quality metrics for all links in this transport.
+    #[cfg(feature = "transport_oam")]
+    fn get_link_quality_metrics(&self) -> Vec<LinkQualityMetrics>;
 
     /*************************************/
     /*               LINK                */

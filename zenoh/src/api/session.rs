@@ -963,6 +963,126 @@ impl Session {
         self.0.runtime.get_link_overrides()
     }
 
+    /// Get OAM link quality metrics for all active links across all transports.
+    ///
+    /// Returns metrics for each link including RTT, jitter, packet loss, and link state.
+    /// These metrics are collected via OAM probes exchanged between Zenoh peers.
+    ///
+    /// # Examples
+    /// ```ignore
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let session = zenoh::open(zenoh::Config::default()).await.unwrap();
+    /// let metrics = session.link_quality_metrics();
+    /// for m in metrics {
+    ///     println!("Link {}: RTT={:?}, jitter={:?}, loss={:.2}%",
+    ///         m.locator, m.rtt_avg, m.jitter, m.loss_ratio * 100.0);
+    /// }
+    /// # }
+    /// ```
+    #[cfg(feature = "transport_oam")]
+    #[zenoh_macros::unstable]
+    pub fn link_quality_metrics(&self) -> Vec<crate::link_quality::LinkQualityMetrics> {
+        self.0.runtime.get_link_quality_metrics()
+    }
+
+    /// Get OAM link quality metrics for links to a specific peer.
+    ///
+    /// Returns metrics for all links connected to the specified peer.
+    ///
+    /// # Arguments
+    /// * `peer` - The ZenohId of the remote peer
+    ///
+    /// # Examples
+    /// ```ignore
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// use zenoh::config::ZenohId;
+    /// let session = zenoh::open(zenoh::Config::default()).await.unwrap();
+    /// let peer_zid: ZenohId = "0123456789abcdef".parse().unwrap();
+    /// let metrics = session.link_quality_metrics_for_peer(peer_zid);
+    /// # }
+    /// ```
+    #[cfg(feature = "transport_oam")]
+    #[zenoh_macros::unstable]
+    pub fn link_quality_metrics_for_peer(
+        &self,
+        peer: zenoh_config::ZenohId,
+    ) -> Vec<crate::link_quality::LinkQualityMetrics> {
+        self.0.runtime.get_link_quality_metrics_for_peer(peer)
+    }
+
+    /// Force all traffic to a specific peer to use a specific link.
+    ///
+    /// When set, Zenoh will use ONLY this link for the specified peer,
+    /// regardless of priority, reliability, or other factors.
+    ///
+    /// # Arguments
+    /// * `peer` - The remote peer ZenohId
+    /// * `link` - The locator of the link to use
+    ///
+    /// # Examples
+    /// ```ignore
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// use zenoh::config::ZenohId;
+    /// let session = zenoh::open(zenoh::Config::default()).await.unwrap();
+    /// let peer: ZenohId = "0123456789abcdef".parse().unwrap();
+    /// let link: zenoh::core::Locator = "tcp/192.168.1.100:7447".parse().unwrap();
+    /// session.set_forced_link(peer, link);
+    /// # }
+    /// ```
+    #[cfg(feature = "transport_oam")]
+    #[zenoh_macros::unstable]
+    pub fn set_forced_link(
+        &self,
+        peer: zenoh_config::ZenohId,
+        link: zenoh_protocol::core::Locator,
+    ) {
+        let overrides = self.0.runtime.get_link_overrides();
+        let guard = overrides.read().unwrap();
+        guard.set_forced_link(peer.into(), link);
+    }
+
+    /// Clear the forced link for a peer, returning to default link selection.
+    ///
+    /// # Arguments
+    /// * `peer` - The remote peer ZenohId
+    #[cfg(feature = "transport_oam")]
+    #[zenoh_macros::unstable]
+    pub fn clear_forced_link(&self, peer: zenoh_config::ZenohId) {
+        let overrides = self.0.runtime.get_link_overrides();
+        let guard = overrides.read().unwrap();
+        guard.clear_forced_link(&peer.into());
+    }
+
+    /// Disable a link entirely. Traffic will not use this link.
+    ///
+    /// The link remains connected but is excluded from selection.
+    /// OAM probes continue to be sent for monitoring.
+    ///
+    /// # Arguments
+    /// * `link` - The locator of the link to disable
+    #[cfg(feature = "transport_oam")]
+    #[zenoh_macros::unstable]
+    pub fn disable_link(&self, link: zenoh_protocol::core::Locator) {
+        let overrides = self.0.runtime.get_link_overrides();
+        let guard = overrides.read().unwrap();
+        guard.disable_link(link);
+    }
+
+    /// Re-enable a previously disabled link.
+    ///
+    /// # Arguments
+    /// * `link` - The locator of the link to enable
+    #[cfg(feature = "transport_oam")]
+    #[zenoh_macros::unstable]
+    pub fn enable_link(&self, link: &zenoh_protocol::core::Locator) {
+        let overrides = self.0.runtime.get_link_overrides();
+        let guard = overrides.read().unwrap();
+        guard.enable_link(link);
+    }
+
     /// Create a [`Subscriber`](crate::pubsub::Subscriber) for the given key expression.
     ///
     /// # Arguments

@@ -1,4 +1,3 @@
-
 //
 // Copyright (c) 2024 ZettaScale Technology
 //
@@ -142,6 +141,7 @@ impl OamResponder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zenoh_buffers::buffer::SplitBuffer;
 
     #[test]
     fn test_loopback_reply() {
@@ -157,7 +157,7 @@ mod tests {
                 assert_eq!(oam.id, oam_id::LBR);
                 match oam.body {
                     ZExtBody::ZBuf(buf) => {
-                        let bytes: Vec<u8> = buf.iter().flat_map(|s| s.iter().copied()).collect();
+                        let bytes: Vec<u8> = buf.slices().flat_map(|s| s.iter().copied()).collect();
                         let decoded = LoopbackPayload::decode(&bytes).unwrap();
                         assert_eq!(decoded.seq, 42);
                         assert_eq!(decoded.timestamp_ns, 1234567890);
@@ -183,7 +183,7 @@ mod tests {
                 assert_eq!(oam.id, oam_id::DMR);
                 match oam.body {
                     ZExtBody::ZBuf(buf) => {
-                        let bytes: Vec<u8> = buf.iter().flat_map(|s| s.iter().copied()).collect();
+                        let bytes: Vec<u8> = buf.slices().flat_map(|s| s.iter().copied()).collect();
                         let decoded = DelayMeasurementPayload::decode(&bytes).unwrap();
                         assert_eq!(decoded.seq, 42);
                         assert_eq!(decoded.t1, 1234567890);
@@ -211,7 +211,7 @@ mod tests {
                 assert_eq!(oam.id, oam_id::SLR);
                 match oam.body {
                     ZExtBody::ZBuf(buf) => {
-                        let bytes: Vec<u8> = buf.iter().flat_map(|s| s.iter().copied()).collect();
+                        let bytes: Vec<u8> = buf.slices().flat_map(|s| s.iter().copied()).collect();
                         let decoded = SyntheticLossPayload::decode(&bytes).unwrap();
                         assert_eq!(decoded.seq, 42);
                         assert_eq!(decoded.tx_counter, 100);

@@ -11,6 +11,8 @@
 // Contributors:
 //   ZettaScale Zenoh Team, <zenoh@zettascale.tech>
 //
+#[cfg(feature = "transport_oam")]
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
@@ -23,6 +25,9 @@ use zenoh_result::{zerror, ZResult};
 #[cfg(feature = "unstable")]
 use zenoh_sync::{event, Notifier, Waiter};
 use zenoh_sync::{RecyclingObject, RecyclingObjectPool};
+
+#[cfg(feature = "transport_oam")]
+use crate::unicast::oam::LinkQualityMetrics;
 
 use super::transport::TransportUnicastUniversal;
 use crate::{
@@ -55,6 +60,9 @@ pub(super) struct TransportLinkUnicastUniversal {
     pub block_first_waiters: [Waiter; Priority::NUM],
     #[cfg(feature = "stats")]
     pub(super) stats: zenoh_stats::LinkStats,
+    // OAM link quality metrics for this link
+    #[cfg(feature = "transport_oam")]
+    pub(super) oam_metrics: Arc<RwLock<LinkQualityMetrics>>,
 }
 
 impl TransportLinkUnicastUniversal {
@@ -102,6 +110,11 @@ impl TransportLinkUnicastUniversal {
             block_first_waiters.push(waiter);
         }
 
+        #[cfg(feature = "transport_oam")]
+        let oam_metrics = Arc::new(RwLock::new(LinkQualityMetrics::new(
+            link.link.get_dst().clone(),
+        )));
+
         let result = Self {
             link,
             pipeline: producer,
@@ -113,6 +126,8 @@ impl TransportLinkUnicastUniversal {
             block_first_waiters: block_first_waiters.try_into().ok().unwrap(),
             #[cfg(feature = "stats")]
             stats,
+            #[cfg(feature = "transport_oam")]
+            oam_metrics,
         };
 
         (result, consumer)

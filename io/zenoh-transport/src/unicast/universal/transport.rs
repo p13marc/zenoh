@@ -354,6 +354,14 @@ impl TransportUnicastTrait for TransportUnicastUniversal {
         self.stats.clone()
     }
 
+    #[cfg(feature = "transport_oam")]
+    fn get_link_quality_metrics(&self) -> Vec<crate::unicast::oam::LinkQualityMetrics> {
+        zread!(self.links)
+            .iter()
+            .filter_map(|l| l.oam_metrics.read().ok().map(|m| m.clone()))
+            .collect()
+    }
+
     /*************************************/
     /*           TERMINATION             */
     /*************************************/

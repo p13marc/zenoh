@@ -153,6 +153,12 @@ impl TransportUnicast {
     pub fn get_stats(&self) -> ZResult<zenoh_stats::TransportStats> {
         Ok(self.get_inner()?.stats())
     }
+
+    /// Returns OAM link quality metrics for all links in this transport.
+    #[cfg(feature = "transport_oam")]
+    pub fn get_link_quality_metrics(&self) -> ZResult<Vec<oam::LinkQualityMetrics>> {
+        Ok(self.get_inner()?.get_link_quality_metrics())
+    }
 }
 
 impl From<&Arc<dyn TransportUnicastTrait>> for TransportUnicast {

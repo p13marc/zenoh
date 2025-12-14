@@ -234,6 +234,12 @@ impl TransportUnicastTrait for TransportUnicastLowlatency {
         self.stats.clone()
     }
 
+    #[cfg(feature = "transport_oam")]
+    fn get_link_quality_metrics(&self) -> Vec<crate::unicast::oam::LinkQualityMetrics> {
+        // Lowlatency transport doesn't support OAM metrics currently
+        Vec::new()
+    }
+
     /*************************************/
     /*                TX                 */
     /*************************************/

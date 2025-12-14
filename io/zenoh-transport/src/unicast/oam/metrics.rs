@@ -16,6 +16,8 @@
 
 use std::time::{Duration, Instant};
 
+use zenoh_protocol::core::Locator;
+
 /// Link operational state based on probe responses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LinkState {
@@ -38,6 +40,10 @@ pub enum LinkState {
 /// by external controllers via the metrics API.
 #[derive(Debug, Clone)]
 pub struct LinkQualityMetrics {
+    // === Link identification ===
+    /// Locator for this link
+    pub locator: Locator,
+
     // === RTT Metrics ===
     /// Current RTT (last measurement)
     pub rtt_current: Duration,
@@ -89,16 +95,11 @@ pub struct LinkQualityMetrics {
     prev_rtt: Option<Duration>,
 }
 
-impl Default for LinkQualityMetrics {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl LinkQualityMetrics {
-    /// Create new metrics with default values.
-    pub fn new() -> Self {
+    /// Create new metrics with default values for a given locator.
+    pub fn new(locator: Locator) -> Self {
         Self {
+            locator,
             rtt_current: Duration::ZERO,
             rtt_min: Duration::MAX,
             rtt_max: Duration::ZERO,
@@ -243,9 +244,10 @@ impl LinkQualityMetrics {
         }
     }
 
-    /// Reset all metrics to initial state.
+    /// Reset all metrics to initial state, preserving the locator.
     pub fn reset(&mut self) {
-        *self = Self::new();
+        let locator = self.locator.clone();
+        *self = Self::new(locator);
     }
 }
 
@@ -253,9 +255,13 @@ impl LinkQualityMetrics {
 mod tests {
     use super::*;
 
+    fn test_locator() -> Locator {
+        "tcp/127.0.0.1:7447".parse().unwrap()
+    }
+
     #[test]
     fn test_initial_state() {
-        let metrics = LinkQualityMetrics::new();
+        let metrics = LinkQualityMetrics::new(test_locator());
         assert_eq!(metrics.state, LinkState::Unknown);
         assert!(!metrics.is_alive);
         assert_eq!(metrics.tx_probe_count, 0);
@@ -264,7 +270,7 @@ mod tests {
 
     #[test]
     fn test_probe_update() {
-        let mut metrics = LinkQualityMetrics::new();
+        let mut metrics = LinkQualityMetrics::new(test_locator());
 
         metrics.record_probe_sent();
         assert_eq!(metrics.tx_probe_count, 1);
@@ -282,7 +288,7 @@ mod tests {
 
     #[test]
     fn test_jitter_calculation() {
-        let mut metrics = LinkQualityMetrics::new();
+        let mut metrics = LinkQualityMetrics::new(test_locator());
 
         // First probe - no jitter yet
         metrics.update_from_probe(Duration::from_millis(10));
@@ -295,7 +301,7 @@ mod tests {
 
     #[test]
     fn test_timeout_handling() {
-        let mut metrics = LinkQualityMetrics::new();
+        let mut metrics = LinkQualityMetrics::new(test_locator());
 
         // First successful probe
         metrics.record_probe_sent();
@@ -322,7 +328,7 @@ mod tests {
 
     #[test]
     fn test_loss_ratio() {
-        let mut metrics = LinkQualityMetrics::new();
+        let mut metrics = LinkQualityMetrics::new(test_locator());
 
         // Send 10 probes, receive 8
         for _ in 0..10 {
