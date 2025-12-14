@@ -1113,19 +1113,142 @@ pub mod cancellation {
     pub use crate::api::cancellation::SyncGroupNotifier;
 }
 
-/// OAM (Operations, Administration, Maintenance) link quality metrics.
+/// OAM (Operations, Administration, Maintenance) link quality metrics and control.
 ///
-/// This module provides types and APIs for accessing link quality metrics
-/// collected via OAM probes. Metrics include RTT, jitter, and packet loss.
+/// This module provides types and APIs for building **External Controllers** that
+/// monitor link quality and control link selection in Zenoh transports.
 ///
-/// # Example
+/// # External Controller Architecture
+///
+/// In the External Controller Architecture, Zenoh collects link quality metrics
+/// via OAM probes and exposes them for external decision-making:
+///
+/// ```text
+/// ┌─────────────────────────────────────────────────────────────┐
+/// │                    External Controller                       │
+/// │  1. Query metrics: session.link_quality_metrics()            │
+/// │  2. Analyze: pick best link based on RTT/jitter/loss         │
+/// │  3. Control: session.set_forced_link(peer, best_link)        │
+/// └─────────────────────────────────────────────────────────────┘
+///                              │
+///                              ▼
+/// ┌─────────────────────────────────────────────────────────────┐
+/// │                      Zenoh Session                           │
+/// │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐          │
+/// │  │  Link WiFi  │  │  Link LTE   │  │  Link Eth   │          │
+/// │  │ RTT: 15ms   │  │ RTT: 45ms   │  │ RTT: 2ms    │          │
+/// │  │ Loss: 1%    │  │ Loss: 0.5%  │  │ Loss: 0%    │          │
+/// │  └─────────────┘  └─────────────┘  └─────────────┘          │
+/// └─────────────────────────────────────────────────────────────┘
+/// ```
+///
+/// # Available Types
+///
+/// - [`LinkQualityMetrics`]: Per-link metrics (RTT, jitter, loss, state)
+/// - [`LinkState`]: Link operational state (Operational, Degraded, Failed, etc.)
+/// - [`LinkOverrides`]: Control structure for forcing/disabling links
+/// - [`OamConfig`]: OAM probing configuration
+///
+/// # Session API Methods
+///
+/// The following methods are available on [`Session`](crate::Session) when the
+/// `transport_oam` feature is enabled:
+///
+/// ## Reading Metrics
+///
+/// - [`Session::link_quality_metrics()`](crate::Session::link_quality_metrics) -
+///   Get metrics for all links
+/// - [`Session::link_quality_metrics_for_peer()`](crate::Session::link_quality_metrics_for_peer) -
+///   Get metrics for a specific peer
+///
+/// ## Controlling Links
+///
+/// - [`Session::set_forced_link()`](crate::Session::set_forced_link) -
+///   Force traffic to use a specific link
+/// - [`Session::clear_forced_link()`](crate::Session::clear_forced_link) -
+///   Clear forced link, return to automatic selection
+/// - [`Session::disable_link()`](crate::Session::disable_link) -
+///   Disable a link (excluded from selection)
+/// - [`Session::enable_link()`](crate::Session::enable_link) -
+///   Re-enable a previously disabled link
+/// - [`Session::get_link_overrides()`](crate::Session::get_link_overrides) -
+///   Direct access to LinkOverrides for advanced control
+///
+/// # Example: Simple Controller
+///
 /// ```ignore
-/// # #[tokio::main]
-/// # async fn main() {
-/// let session = zenoh::open(zenoh::Config::default()).await.unwrap();
-/// // Link quality metrics are exposed via admin space at:
-/// // @/{zid}/link/{link_id}/metrics
-/// # }
+/// use zenoh::link_quality::{LinkQualityMetrics, LinkState};
+///
+/// async fn run_controller(session: &zenoh::Session) {
+///     loop {
+///         // 1. Get metrics for all links
+///         let metrics = session.link_quality_metrics();
+///
+///         // 2. Group by peer and find the best link for each
+///         let mut best_by_peer: std::collections::HashMap<_, &LinkQualityMetrics> =
+///             std::collections::HashMap::new();
+///
+///         for m in &metrics {
+///             // Skip failed links
+///             if matches!(m.state, LinkState::Failed) {
+///                 continue;
+///             }
+///
+///             let dominated = best_by_peer.get(&m.peer).is_some_and(|best| {
+///                 best.rtt_avg < m.rtt_avg  // Prefer lower RTT
+///             });
+///
+///             if !dominated {
+///                 best_by_peer.insert(m.peer, m);
+///             }
+///         }
+///
+///         // 3. Apply decisions
+///         for (peer, best) in best_by_peer {
+///             session.set_forced_link(peer.into(), best.locator.clone());
+///         }
+///
+///         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+///     }
+/// }
+/// ```
+///
+/// # Example: Reading Metrics via Admin Space
+///
+/// Metrics are also published to the admin space for remote monitoring:
+///
+/// ```ignore
+/// // Query all routers for their link metrics
+/// let replies = session.get("@/*/router/**").await.unwrap();
+/// while let Ok(reply) = replies.recv_async().await {
+///     if let Ok(sample) = reply.result() {
+///         // Parse JSON payload containing oam_metrics array
+///         let payload = sample.payload().deserialize::<String>().unwrap();
+///         println!("{}: {}", sample.key_expr(), payload);
+///     }
+/// }
+/// ```
+///
+/// # Configuration
+///
+/// OAM is configured in the zenoh config file:
+///
+/// ```json5
+/// {
+///   transport: {
+///     unicast: {
+///       oam: {
+///         enabled: true,           // Enable OAM probing
+///         probe_interval_ms: 100,  // Probe frequency
+///         probe_timeout_ms: 500,   // Probe timeout
+///         sample_window: 20,       // Moving average window
+///         failure_threshold: 3,    // Failures before marking link down
+///         publish_metrics: true,   // Expose in admin space
+///         publish_interval_ms: 500
+///       }
+///     }
+///   }
+/// }
 /// ```
 #[zenoh_macros::unstable]
 #[cfg(feature = "transport_oam")]
