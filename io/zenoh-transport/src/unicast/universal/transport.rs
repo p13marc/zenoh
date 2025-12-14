@@ -305,9 +305,14 @@ impl TransportUnicastTrait for TransportUnicastUniversal {
             c_link.start_tx(c_transport, consumer, keep_alive);
         });
 
+        #[cfg(feature = "transport_oam")]
+        let oam_config = crate::unicast::oam::OamConfig::default(); // TODO: get from transport config
         let start_rx = Box::new(move || {
             // Start the RX loop
             link.start_rx(transport, other_lease);
+            // Start OAM probing if enabled
+            #[cfg(feature = "transport_oam")]
+            link.start_oam(oam_config);
         });
 
         Ok((start_tx, start_rx, ack, Some(add_link_guard)))

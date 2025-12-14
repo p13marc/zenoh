@@ -34,6 +34,7 @@ use zenoh_protocol::{
 };
 
 use super::{LinkQualityMetrics, OamConfig};
+use crate::common::pipeline::TransmissionPipelineProducer;
 
 /// Probe types that can be sent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,23 +61,23 @@ pub struct OamProber {
     pending_probes: HashMap<u32, PendingProbe>,
     /// Sequence number counter
     seq: AtomicU32,
-    /// Channel to send OAM messages to the transport
-    tx_sender: mpsc::Sender<TransportMessage>,
+    /// Pipeline to send OAM messages through
+    pipeline: TransmissionPipelineProducer,
 }
 
 impl OamProber {
     /// Create a new OAM prober.
-    pub fn new(
+    pub(crate) fn new(
         config: OamConfig,
         metrics: Arc<RwLock<LinkQualityMetrics>>,
-        tx_sender: mpsc::Sender<TransportMessage>,
+        pipeline: TransmissionPipelineProducer,
     ) -> Self {
         Self {
             config,
             metrics,
             pending_probes: HashMap::new(),
             seq: AtomicU32::new(0),
-            tx_sender,
+            pipeline,
         }
     }
 
@@ -94,7 +95,7 @@ impl OamProber {
     }
 
     /// Send a loopback probe (LBM).
-    pub async fn send_loopback(&mut self) -> Result<(), String> {
+    pub fn send_loopback(&mut self) -> Result<(), String> {
         let seq = self.next_seq();
         let timestamp_ns = Self::now_ns();
         let payload = LoopbackPayload::new(seq, timestamp_ns);
@@ -123,11 +124,15 @@ impl OamProber {
             m.record_probe_sent();
         }
 
-        // Send the probe
-        self.tx_sender
-            .send(msg)
-            .await
-            .map_err(|e| format!("Failed to send LBM: {}", e))
+        // Send the probe through the pipeline at background priority
+        match self
+            .pipeline
+            .push_transport_message(msg, zenoh_protocol::core::Priority::Background)
+        {
+            Ok(true) => Ok(()),
+            Ok(false) => Err("Pipeline congested, probe not sent".to_string()),
+            Err(_) => Err("Pipeline closed".to_string()),
+        }
     }
 
     /// Handle an incoming probe reply.
@@ -272,6 +277,42 @@ impl OamProber {
     /// Get the current probe interval setting.
     pub fn probe_interval(&self) -> Duration {
         self.config.probe_interval
+    }
+}
+
+/// Run the OAM probing loop.
+///
+/// This function sends periodic probes and checks for timeouts.
+/// It runs until the cancellation token is triggered.
+pub(crate) async fn run_oam_prober(
+    config: OamConfig,
+    metrics: Arc<RwLock<LinkQualityMetrics>>,
+    pipeline: TransmissionPipelineProducer,
+    mut rx_receiver: mpsc::Receiver<(u16, Vec<u8>)>,
+    token: tokio_util::sync::CancellationToken,
+) {
+    let mut prober = OamProber::new(config.clone(), metrics, pipeline);
+    let mut probe_interval = tokio::time::interval(config.probe_interval);
+    let mut timeout_check_interval = tokio::time::interval(config.probe_timeout / 2);
+
+    loop {
+        tokio::select! {
+            _ = token.cancelled() => {
+                tracing::trace!("OAM prober cancelled");
+                break;
+            }
+            _ = probe_interval.tick() => {
+                if let Err(e) = prober.send_loopback() {
+                    tracing::debug!("Failed to send OAM probe: {}", e);
+                }
+            }
+            _ = timeout_check_interval.tick() => {
+                prober.check_timeouts();
+            }
+            Some((oam_id, payload)) = rx_receiver.recv() => {
+                prober.handle_reply(oam_id, &payload);
+            }
+        }
     }
 }
 

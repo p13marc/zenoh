@@ -12,9 +12,13 @@
 //   ZettaScale Zenoh Team, <zenoh@zettascale.tech>
 //
 #[cfg(feature = "transport_oam")]
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+#[cfg(feature = "transport_oam")]
+use std::sync::RwLock;
 use std::time::Duration;
 
+#[cfg(feature = "transport_oam")]
+use tokio::sync::mpsc;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use zenoh_buffers::ZSliceBuffer;
 use zenoh_link::Link;
@@ -27,7 +31,7 @@ use zenoh_sync::{event, Notifier, Waiter};
 use zenoh_sync::{RecyclingObject, RecyclingObjectPool};
 
 #[cfg(feature = "transport_oam")]
-use crate::unicast::oam::LinkQualityMetrics;
+use crate::unicast::oam::{LinkQualityMetrics, OamConfig};
 
 use super::transport::TransportUnicastUniversal;
 use crate::{
@@ -63,6 +67,12 @@ pub(super) struct TransportLinkUnicastUniversal {
     // OAM link quality metrics for this link
     #[cfg(feature = "transport_oam")]
     pub(super) oam_metrics: Arc<RwLock<LinkQualityMetrics>>,
+    // Channel to forward OAM replies from RX to the prober
+    #[cfg(feature = "transport_oam")]
+    pub(super) oam_reply_sender: mpsc::Sender<(u16, Vec<u8>)>,
+    // Receiver for OAM replies (taken when starting prober)
+    #[cfg(feature = "transport_oam")]
+    oam_reply_receiver: Arc<std::sync::Mutex<Option<mpsc::Receiver<(u16, Vec<u8>)>>>>,
 }
 
 impl TransportLinkUnicastUniversal {
@@ -115,6 +125,10 @@ impl TransportLinkUnicastUniversal {
             link.link.get_dst().clone(),
         )));
 
+        // Create OAM channel for forwarding replies from RX to the prober
+        #[cfg(feature = "transport_oam")]
+        let (oam_reply_sender, oam_reply_receiver) = mpsc::channel::<(u16, Vec<u8>)>(16);
+
         let result = Self {
             link,
             pipeline: producer,
@@ -128,6 +142,10 @@ impl TransportLinkUnicastUniversal {
             stats,
             #[cfg(feature = "transport_oam")]
             oam_metrics,
+            #[cfg(feature = "transport_oam")]
+            oam_reply_sender,
+            #[cfg(feature = "transport_oam")]
+            oam_reply_receiver: Arc::new(std::sync::Mutex::new(Some(oam_reply_receiver))),
         };
 
         (result, consumer)
@@ -212,6 +230,44 @@ impl TransportLinkUnicastUniversal {
         };
         // WARN: If this is on ZRuntime::TX, a deadlock would occur.
         self.tracker.spawn_on(task, &zenoh_runtime::ZRuntime::RX);
+    }
+
+    /// Start the OAM probing task for this link.
+    #[cfg(feature = "transport_oam")]
+    pub(super) fn start_oam(&mut self, config: OamConfig) {
+        // Take the reply receiver (can only start once)
+        let oam_reply_receiver = match self.oam_reply_receiver.lock() {
+            Ok(mut guard) => guard.take(),
+            Err(_) => None,
+        };
+
+        let Some(oam_reply_receiver) = oam_reply_receiver else {
+            tracing::warn!("OAM prober already started or receiver unavailable");
+            return;
+        };
+
+        if !config.enabled {
+            tracing::trace!("OAM probing disabled by configuration");
+            return;
+        }
+
+        let metrics = self.oam_metrics.clone();
+        let pipeline = self.pipeline.clone();
+        let token = self.token.clone();
+
+        let task = async move {
+            crate::unicast::oam::run_oam_prober(
+                config,
+                metrics,
+                pipeline,
+                oam_reply_receiver,
+                token,
+            )
+            .await;
+        };
+
+        self.tracker.spawn_on(task, &zenoh_runtime::ZRuntime::Net);
+        tracing::trace!("OAM prober started for link");
     }
 
     pub(super) async fn close(self) -> ZResult<()> {

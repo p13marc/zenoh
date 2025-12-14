@@ -241,7 +241,7 @@ impl TransportUnicastUniversal {
     /// For probe requests (LBM, DMM, SLM), generates and sends a reply.
     /// For probe replies (LBR, DMR, SLR), forwards to the prober for processing.
     #[cfg(feature = "transport_oam")]
-    fn handle_oam(&self, oam: Oam, _link: &Link) -> ZResult<()> {
+    fn handle_oam(&self, oam: Oam, link: &Link) -> ZResult<()> {
         use zenoh_protocol::common::ZExtBody;
 
         // Extract payload bytes from ZExtBody
@@ -257,6 +257,15 @@ impl TransportUnicastUniversal {
             ZExtBody::Unit => vec![],
         };
 
+        // Find the TransportLinkUnicastUniversal for this link
+        let transport_link = {
+            let guard = zread!(self.links);
+            guard
+                .iter()
+                .find(|tl| tl.link.link.get_dst() == &link.dst)
+                .cloned()
+        };
+
         match oam.id {
             // Probe requests - generate and send reply
             oam_id::LBM | oam_id::DMM | oam_id::SLM => {
@@ -268,27 +277,49 @@ impl TransportUnicastUniversal {
                     &payload_bytes,
                     rx_probe_count,
                 ) {
-                    // Send the reply back on the same link
-                    // For now, we log that we would send - actual sending requires pipeline access
-                    tracing::trace!(
-                        "Transport: {}. OAM reply generated for probe ID {:#06x}",
-                        self.config.zid,
-                        oam.id
-                    );
-                    // TODO: Send reply through the link's pipeline
-                    // This requires access to the link's TransmissionPipelineProducer
-                    let _ = reply; // Suppress unused warning for now
+                    // Send the reply back through the link's pipeline
+                    if let Some(tl) = &transport_link {
+                        match tl.pipeline.push_transport_message(
+                            reply,
+                            zenoh_protocol::core::Priority::Background,
+                        ) {
+                            Ok(true) => {
+                                tracing::trace!(
+                                    "Transport: {}. OAM reply sent for probe ID {:#06x}",
+                                    self.config.zid,
+                                    oam.id
+                                );
+                            }
+                            Ok(false) => {
+                                tracing::debug!(
+                                    "Transport: {}. OAM reply dropped (congested) for probe ID {:#06x}",
+                                    self.config.zid,
+                                    oam.id
+                                );
+                            }
+                            Err(_) => {
+                                tracing::debug!(
+                                    "Transport: {}. OAM reply failed (pipeline closed) for probe ID {:#06x}",
+                                    self.config.zid,
+                                    oam.id
+                                );
+                            }
+                        }
+                    }
                 }
             }
 
             // Probe replies - forward to prober
             oam_id::LBR | oam_id::DMR | oam_id::SLR => {
-                tracing::trace!(
-                    "Transport: {}. OAM reply received: ID {:#06x}",
-                    self.config.zid,
-                    oam.id
-                );
-                // TODO: Forward to the link's OamProber when integrated
+                if let Some(tl) = &transport_link {
+                    // Forward to the prober via channel
+                    let _ = tl.oam_reply_sender.try_send((oam.id, payload_bytes));
+                    tracing::trace!(
+                        "Transport: {}. OAM reply forwarded to prober: ID {:#06x}",
+                        self.config.zid,
+                        oam.id
+                    );
+                }
             }
 
             // Unknown OAM ID - log and ignore for backward compatibility

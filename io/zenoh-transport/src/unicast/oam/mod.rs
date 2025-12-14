@@ -29,6 +29,7 @@ mod responder;
 
 pub use link_control::LinkOverrides;
 pub use metrics::{LinkQualityMetrics, LinkState};
+pub(crate) use prober::run_oam_prober;
 pub use prober::OamProber;
 pub use responder::OamResponder;
 
