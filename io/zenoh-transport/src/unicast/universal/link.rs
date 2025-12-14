@@ -156,6 +156,7 @@ impl TransportLinkUnicastUniversal {
         transport: TransportUnicastUniversal,
         consumer: TransmissionPipelineConsumer,
         keep_alive: Duration,
+        #[cfg(feature = "transport_oam")] oam_enabled: bool,
     ) {
         // Spawn the TX task
         let mut tx = self.link.tx();
@@ -167,6 +168,8 @@ impl TransportLinkUnicastUniversal {
                 consumer,
                 &mut tx,
                 keep_alive,
+                #[cfg(feature = "transport_oam")]
+                oam_enabled,
                 token,
                 #[cfg(feature = "stats")]
                 stats,
@@ -289,9 +292,17 @@ async fn tx_task(
     mut pipeline: TransmissionPipelineConsumer,
     link: &mut TransportLinkUnicastTx,
     keep_alive: Duration,
+    #[cfg(feature = "transport_oam")] oam_enabled: bool,
     token: CancellationToken,
     #[cfg(feature = "stats")] stats: zenoh_stats::LinkStats,
 ) -> ZResult<()> {
+    // When OAM is enabled, it handles liveness detection via probes,
+    // so we skip sending KeepAlive messages to avoid redundant traffic.
+    #[cfg(feature = "transport_oam")]
+    let send_keepalive = !oam_enabled;
+    #[cfg(not(feature = "transport_oam"))]
+    let send_keepalive = true;
+
     loop {
         tokio::select! {
             res = tokio::time::timeout(keep_alive, pipeline.pull()) => {
@@ -314,16 +325,18 @@ async fn tx_task(
                     },
                     Err(_) => {
                         // A timeout occurred, no control/data messages have been sent during
-                        // the keep_alive period, we need to send a KeepAlive message
-                        let message: TransportMessage = KeepAlive.into();
+                        // the keep_alive period. Send a KeepAlive message unless OAM handles liveness.
+                        if send_keepalive {
+                            let message: TransportMessage = KeepAlive.into();
 
-                        #[allow(unused_variables)] // Used when stats feature is enabled
-                        let n = link.send(&message).await?;
+                            #[allow(unused_variables)] // Used when stats feature is enabled
+                            let n = link.send(&message).await?;
 
-                        #[cfg(feature = "stats")]
-                        {
-                            stats.inc_bytes(zenoh_stats::Tx, n as u64);
-                            stats.inc_transport_message(zenoh_stats::Tx, 1);
+                            #[cfg(feature = "stats")]
+                            {
+                                stats.inc_bytes(zenoh_stats::Tx, n as u64);
+                                stats.inc_transport_message(zenoh_stats::Tx, 1);
+                            }
                         }
                     }
                 }

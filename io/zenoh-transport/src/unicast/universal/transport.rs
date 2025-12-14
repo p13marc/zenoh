@@ -298,11 +298,19 @@ impl TransportUnicastTrait for TransportUnicastUniversal {
         let transport = self.clone();
         let mut c_link = link.clone();
         let c_transport = transport.clone();
+        #[cfg(feature = "transport_oam")]
+        let oam_enabled = self.manager.config.unicast.oam.enabled;
         let start_tx = Box::new(move || {
             // Start the TX loop
             let keep_alive =
                 self.manager.config.unicast.lease / self.manager.config.unicast.keep_alive as u32;
-            c_link.start_tx(c_transport, consumer, keep_alive);
+            c_link.start_tx(
+                c_transport,
+                consumer,
+                keep_alive,
+                #[cfg(feature = "transport_oam")]
+                oam_enabled,
+            );
         });
 
         #[cfg(feature = "transport_oam")]
